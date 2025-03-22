@@ -294,12 +294,6 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
         log("webSocketServer has error");
         controller.error(err);
       });
-      const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
-      if (error) {
-        controller.error(error);
-      } else if (earlyData) {
-        controller.enqueue(earlyData);
-      }
     },
 
     pull(controller) {},
