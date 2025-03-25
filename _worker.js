@@ -172,7 +172,6 @@ async function protocolSniffer(buffer) {
   if (vlessDelimiter.length > 0) {
     return "VLESS";
   }
-  log("Unknown protocol");
   return "Unknown";
 }
 
