@@ -105,12 +105,8 @@ async function websocketHandler(request) {
           const protocol = await protocolSniffer(chunk);
           let protocolHeader;
 
-          if (protocol === "Trojan") {
-            protocolHeader = parseTrojanHeader(chunk);
-          } else if (protocol === "VLESS") {
+          if (protocol === "VLESS") {
             protocolHeader = parseVlessHeader(chunk);
-          } else if (protocol === "Shadowsocks") {
-            protocolHeader = parseSsHeader(chunk);
           } else {
             throw new Error("Unknown Protocol!");
           }
@@ -171,23 +167,13 @@ async function websocketHandler(request) {
 }
 
 async function protocolSniffer(buffer) {
-  if (buffer.byteLength >= 62) {
-    const trojanDelimiter = new Uint8Array(buffer.slice(56, 60));
-    if (trojanDelimiter[0] === 0x0d && trojanDelimiter[1] === 0x0a) {
-      if (trojanDelimiter[2] === 0x01 || trojanDelimiter[2] === 0x03 || trojanDelimiter[2] === 0x7f) {
-        if (trojanDelimiter[3] === 0x01 || trojanDelimiter[3] === 0x03 || trojanDelimiter[3] === 0x04) {
-          return "Trojan";
-        }
-      }
-    }
-  }
-
   const vlessDelimiter = new Uint8Array(buffer.slice(1, 17));
   // Accept any string of UUID
   if (vlessDelimiter.length > 0) {
     return "VLESS";
   }
-  return "Shadowsocks"; // default
+  log("Unknown protocol");
+  return "Unknown";
 }
 
 async function handleTCPOutBound(
@@ -433,80 +419,6 @@ function parseVlessHeader(buffer) {
     rawDataIndex: addressValueIndex + addressLength,
     rawClientData: buffer.slice(addressValueIndex + addressLength),
     version: new Uint8Array([version[0], 0]),
-    isUDP: isUDP,
-  };
-}
-
-function parseTrojanHeader(buffer) {
-  const socks5DataBuffer = buffer.slice(58);
-  if (socks5DataBuffer.byteLength < 6) {
-    return {
-      hasError: true,
-      message: "invalid SOCKS5 request data",
-    };
-  }
-
-  let isUDP = false;
-  const view = new DataView(socks5DataBuffer);
-  const cmd = view.getUint8(0);
-  if (cmd == 3) {
-    isUDP = true;
-  } else if (cmd != 1) {
-    throw new Error("Unsupported command type!");
-  }
-
-  let addressType = view.getUint8(1);
-  let addressLength = 0;
-  let addressValueIndex = 2;
-  let addressValue = "";
-  switch (addressType) {
-    case 1: // For IPv4
-      addressLength = 4;
-      addressValue = new Uint8Array(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(
-        "."
-      );
-      break;
-    case 3: // For Domain
-      addressLength = new Uint8Array(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
-      addressValueIndex += 1;
-      addressValue = new TextDecoder().decode(
-        socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength)
-      );
-      break;
-    case 4: // For IPv6
-      addressLength = 16;
-      const dataView = new DataView(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
-      const ipv6 = [];
-      for (let i = 0; i < 8; i++) {
-        ipv6.push(dataView.getUint16(i * 2).toString(16));
-      }
-      addressValue = ipv6.join(":");
-      break;
-    default:
-      return {
-        hasError: true,
-        message: `invalid addressType is ${addressType}`,
-      };
-  }
-
-  if (!addressValue) {
-    return {
-      hasError: true,
-      message: `address is empty, addressType is ${addressType}`,
-    };
-  }
-
-  const portIndex = addressValueIndex + addressLength;
-  const portBuffer = socks5DataBuffer.slice(portIndex, portIndex + 2);
-  const portRemote = new DataView(portBuffer).getUint16(0);
-  return {
-    hasError: false,
-    addressRemote: addressValue,
-    addressType: addressType,
-    portRemote: portRemote,
-    rawDataIndex: portIndex + 4,
-    rawClientData: socks5DataBuffer.slice(portIndex + 4),
-    version: null,
     isUDP: isUDP,
   };
 }
