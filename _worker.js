@@ -50,8 +50,12 @@ export default {
         if (proxyMatch) {
           proxyIP = proxyMatch[1];
           return await websocketHandler(request);
-        } else if (url.pathname === "/default" || url.pathname === "/" || url.pathname === "") {
-          proxyIP = "15.235.162.49:443" // OVH SG;
+        } else if (
+          url.pathname === "/default" ||
+          url.pathname === "/" ||
+          url.pathname === ""
+        ) {
+          proxyIP = "15.235.162.49:443"; // OVH SG;
           return await websocketHandler(request);
         }
       }
@@ -81,7 +85,11 @@ async function websocketHandler(request) {
   };
   const earlyDataHeader = request.headers.get("sec-websocket-protocol") || "";
 
-  const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
+  const readableWebSocketStream = makeReadableWebSocketStream(
+    webSocket,
+    earlyDataHeader,
+    log
+  );
 
   let remoteSocketWrapper = {
     value: null,
@@ -93,7 +101,14 @@ async function websocketHandler(request) {
       new WritableStream({
         async write(chunk, controller) {
           if (isDNS) {
-            return handleUDPOutbound(DNS_SERVER_ADDRESS, DNS_SERVER_PORT, chunk, webSocket, null, log);
+            return handleUDPOutbound(
+              DNS_SERVER_ADDRESS,
+              DNS_SERVER_PORT,
+              chunk,
+              webSocket,
+              null,
+              log
+            );
           }
           if (remoteSocketWrapper.value) {
             const writer = remoteSocketWrapper.value.writable.getWriter();
@@ -112,7 +127,9 @@ async function websocketHandler(request) {
           }
 
           addressLog = protocolHeader.addressRemote;
-          portLog = `${protocolHeader.portRemote} -> ${protocolHeader.isUDP ? "UDP" : "TCP"}`;
+          portLog = `${protocolHeader.portRemote} -> ${
+            protocolHeader.isUDP ? "UDP" : "TCP"
+          }`;
 
           if (protocolHeader.hasError) {
             throw new Error(protocolHeader.message);
@@ -218,7 +235,14 @@ async function handleTCPOutBound(
   remoteSocketToWS(tcpSocket, webSocket, responseHeader, retry, log);
 }
 
-async function handleUDPOutbound(targetAddress, targetPort, udpChunk, webSocket, responseHeader, log) {
+async function handleUDPOutbound(
+  targetAddress,
+  targetPort,
+  udpChunk,
+  webSocket,
+  responseHeader,
+  log
+) {
   try {
     let protocolHeader = responseHeader;
     const tcpSocket = connect({
@@ -237,7 +261,9 @@ async function handleUDPOutbound(targetAddress, targetPort, udpChunk, webSocket,
         async write(chunk) {
           if (webSocket.readyState === WS_READY_STATE_OPEN) {
             if (protocolHeader) {
-              webSocket.send(await new Blob([protocolHeader, chunk]).arrayBuffer());
+              webSocket.send(
+                await new Blob([protocolHeader, chunk]).arrayBuffer()
+              );
               protocolHeader = null;
             } else {
               webSocket.send(chunk);
@@ -248,7 +274,9 @@ async function handleUDPOutbound(targetAddress, targetPort, udpChunk, webSocket,
           log(`UDP connection to ${targetAddress} closed`);
         },
         abort(reason) {
-          console.error(`UDP connection to ${targetPort} aborted due to ${reason}`);
+          console.error(
+            `UDP connection to ${targetPort} aborted due to ${reason}`
+          );
         },
       })
     );
@@ -301,7 +329,9 @@ function parseVlessHeader(buffer) {
 
   const optLength = new Uint8Array(buffer.slice(17, 18))[0];
 
-  const cmd = new Uint8Array(buffer.slice(18 + optLength, 18 + optLength + 1))[0];
+  const cmd = new Uint8Array(
+    buffer.slice(18 + optLength, 18 + optLength + 1)
+  )[0];
   if (cmd === 1) {
   } else if (cmd === 2) {
     isUDP = true;
@@ -316,7 +346,9 @@ function parseVlessHeader(buffer) {
   const portRemote = new DataView(portBuffer).getUint16(0);
 
   let addressIndex = portIndex + 2;
-  const addressBuffer = new Uint8Array(buffer.slice(addressIndex, addressIndex + 1));
+  const addressBuffer = new Uint8Array(
+    buffer.slice(addressIndex, addressIndex + 1)
+  );
 
   const addressType = addressBuffer[0];
   let addressLength = 0;
@@ -325,16 +357,24 @@ function parseVlessHeader(buffer) {
   switch (addressType) {
     case 1: // For IPv4
       addressLength = 4;
-      addressValue = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
+      addressValue = new Uint8Array(
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+      ).join(".");
       break;
     case 2: // For Domain
-      addressLength = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + 1))[0];
+      addressLength = new Uint8Array(
+        buffer.slice(addressValueIndex, addressValueIndex + 1)
+      )[0];
       addressValueIndex += 1;
-      addressValue = new TextDecoder().decode(buffer.slice(addressValueIndex, addressValueIndex + addressLength));
+      addressValue = new TextDecoder().decode(
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+      );
       break;
     case 3: // For IPv6
       addressLength = 16;
-      const dataView = new DataView(buffer.slice(addressValueIndex, addressValueIndex + addressLength));
+      const dataView = new DataView(
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+      );
       const ipv6 = [];
       for (let i = 0; i < 8; i++) {
         ipv6.push(dataView.getUint16(i * 2).toString(16));
@@ -366,7 +406,13 @@ function parseVlessHeader(buffer) {
   };
 }
 
-async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, log) {
+async function remoteSocketToWS(
+  remoteSocket,
+  webSocket,
+  responseHeader,
+  retry,
+  log
+) {
   let header = responseHeader;
   let hasIncomingData = false;
   await remoteSocket.readable
@@ -386,7 +432,9 @@ async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, 
           }
         },
         close() {
-          log(`remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`);
+          log(
+            `remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`
+          );
         },
         abort(reason) {
           console.error(`remoteConnection!.readable abort`, reason);
@@ -405,7 +453,10 @@ async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, 
 
 function safeCloseWebSocket(socket) {
   try {
-    if (socket.readyState === WS_READY_STATE_OPEN || socket.readyState === WS_READY_STATE_CLOSING) {
+    if (
+      socket.readyState === WS_READY_STATE_OPEN ||
+      socket.readyState === WS_READY_STATE_CLOSING
+    ) {
       socket.close();
     }
   } catch (error) {
