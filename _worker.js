@@ -50,8 +50,12 @@ export default {
         if (proxyMatch) {
           proxyIP = proxyMatch[1];
           return await websocketHandler(request);
-        } else if (url.pathname === "/default" || url.pathname === "/" || url.pathname === "") {
-          proxyIP = "15.235.162.49:443" // OVH SG;
+        } else if (
+          url.pathname === "/default" ||
+          url.pathname === "/" ||
+          url.pathname === ""
+        ) {
+          proxyIP = "15.235.162.49:443"; // OVH SG;
           return await websocketHandler(request);
         }
       }
@@ -81,7 +85,11 @@ async function websocketHandler(request) {
   };
   const earlyDataHeader = request.headers.get("sec-websocket-protocol") || "";
 
-  const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
+  const readableWebSocketStream = makeReadableWebSocketStream(
+    webSocket,
+    earlyDataHeader,
+    log
+  );
 
   let remoteSocketWrapper = {
     value: null,
@@ -93,7 +101,14 @@ async function websocketHandler(request) {
       new WritableStream({
         async write(chunk, controller) {
           if (isDNS) {
-            return handleUDPOutbound(DNS_SERVER_ADDRESS, DNS_SERVER_PORT, chunk, webSocket, null, log);
+            return handleUDPOutbound(
+              DNS_SERVER_ADDRESS,
+              DNS_SERVER_PORT,
+              chunk,
+              webSocket,
+              null,
+              log
+            );
           }
           if (remoteSocketWrapper.value) {
             const writer = remoteSocketWrapper.value.writable.getWriter();
@@ -105,18 +120,16 @@ async function websocketHandler(request) {
           const protocol = await protocolSniffer(chunk);
           let protocolHeader;
 
-          if (protocol === "Trojan") {
-            protocolHeader = parseTrojanHeader(chunk);
-          } else if (protocol === "VLESS") {
+          if (protocol === "VLESS") {
             protocolHeader = parseVlessHeader(chunk);
-          } else if (protocol === "Shadowsocks") {
-            protocolHeader = parseSsHeader(chunk);
           } else {
             throw new Error("Unknown Protocol!");
           }
 
           addressLog = protocolHeader.addressRemote;
-          portLog = `${protocolHeader.portRemote} -> ${protocolHeader.isUDP ? "UDP" : "TCP"}`;
+          portLog = `${protocolHeader.portRemote} -> ${
+            protocolHeader.isUDP ? "UDP" : "TCP"
+          }`;
 
           if (protocolHeader.hasError) {
             throw new Error(protocolHeader.message);
@@ -171,23 +184,12 @@ async function websocketHandler(request) {
 }
 
 async function protocolSniffer(buffer) {
-  if (buffer.byteLength >= 62) {
-    const trojanDelimiter = new Uint8Array(buffer.slice(56, 60));
-    if (trojanDelimiter[0] === 0x0d && trojanDelimiter[1] === 0x0a) {
-      if (trojanDelimiter[2] === 0x01 || trojanDelimiter[2] === 0x03 || trojanDelimiter[2] === 0x7f) {
-        if (trojanDelimiter[3] === 0x01 || trojanDelimiter[3] === 0x03 || trojanDelimiter[3] === 0x04) {
-          return "Trojan";
-        }
-      }
-    }
-  }
-
   const vlessDelimiter = new Uint8Array(buffer.slice(1, 17));
   // Accept any string of UUID
   if (vlessDelimiter.length > 0) {
     return "VLESS";
   }
-  return "Shadowsocks"; // default
+  return "Unknown";
 }
 
 async function handleTCPOutBound(
@@ -233,7 +235,14 @@ async function handleTCPOutBound(
   remoteSocketToWS(tcpSocket, webSocket, responseHeader, retry, log);
 }
 
-async function handleUDPOutbound(targetAddress, targetPort, udpChunk, webSocket, responseHeader, log) {
+async function handleUDPOutbound(
+  targetAddress,
+  targetPort,
+  udpChunk,
+  webSocket,
+  responseHeader,
+  log
+) {
   try {
     let protocolHeader = responseHeader;
     const tcpSocket = connect({
@@ -252,7 +261,9 @@ async function handleUDPOutbound(targetAddress, targetPort, udpChunk, webSocket,
         async write(chunk) {
           if (webSocket.readyState === WS_READY_STATE_OPEN) {
             if (protocolHeader) {
-              webSocket.send(await new Blob([protocolHeader, chunk]).arrayBuffer());
+              webSocket.send(
+                await new Blob([protocolHeader, chunk]).arrayBuffer()
+              );
               protocolHeader = null;
             } else {
               webSocket.send(chunk);
@@ -263,7 +274,9 @@ async function handleUDPOutbound(targetAddress, targetPort, udpChunk, webSocket,
           log(`UDP connection to ${targetAddress} closed`);
         },
         abort(reason) {
-          console.error(`UDP connection to ${targetPort} aborted due to ${reason}`);
+          console.error(
+            `UDP connection to ${targetPort} aborted due to ${reason}`
+          );
         },
       })
     );
@@ -310,69 +323,15 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
   return stream;
 }
 
-function parseSsHeader(ssBuffer) {
-  const view = new DataView(ssBuffer);
-
-  const addressType = view.getUint8(0);
-  let addressLength = 0;
-  let addressValueIndex = 1;
-  let addressValue = "";
-
-  switch (addressType) {
-    case 1:
-      addressLength = 4;
-      addressValue = new Uint8Array(ssBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
-      break;
-    case 3:
-      addressLength = new Uint8Array(ssBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
-      addressValueIndex += 1;
-      addressValue = new TextDecoder().decode(ssBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
-      break;
-    case 4:
-      addressLength = 16;
-      const dataView = new DataView(ssBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
-      const ipv6 = [];
-      for (let i = 0; i < 8; i++) {
-        ipv6.push(dataView.getUint16(i * 2).toString(16));
-      }
-      addressValue = ipv6.join(":");
-      break;
-    default:
-      return {
-        hasError: true,
-        message: `Invalid addressType for shadowsocks}: ${addressType}`,
-      };
-  }
-
-  if (!addressValue) {
-    return {
-      hasError: true,
-      message: `Destination address empty, address type is: ${addressType}`,
-    };
-  }
-
-  const portIndex = addressValueIndex + addressLength;
-  const portBuffer = ssBuffer.slice(portIndex, portIndex + 2);
-  const portRemote = new DataView(portBuffer).getUint16(0);
-  return {
-    hasError: false,
-    addressRemote: addressValue,
-    addressType: addressType,
-    portRemote: portRemote,
-    rawDataIndex: portIndex + 2,
-    rawClientData: ssBuffer.slice(portIndex + 2),
-    version: null,
-    isUDP: portRemote == 53,
-  };
-}
-
 function parseVlessHeader(buffer) {
   const version = new Uint8Array(buffer.slice(0, 1));
   let isUDP = false;
 
   const optLength = new Uint8Array(buffer.slice(17, 18))[0];
 
-  const cmd = new Uint8Array(buffer.slice(18 + optLength, 18 + optLength + 1))[0];
+  const cmd = new Uint8Array(
+    buffer.slice(18 + optLength, 18 + optLength + 1)
+  )[0];
   if (cmd === 1) {
   } else if (cmd === 2) {
     isUDP = true;
@@ -387,7 +346,9 @@ function parseVlessHeader(buffer) {
   const portRemote = new DataView(portBuffer).getUint16(0);
 
   let addressIndex = portIndex + 2;
-  const addressBuffer = new Uint8Array(buffer.slice(addressIndex, addressIndex + 1));
+  const addressBuffer = new Uint8Array(
+    buffer.slice(addressIndex, addressIndex + 1)
+  );
 
   const addressType = addressBuffer[0];
   let addressLength = 0;
@@ -396,16 +357,24 @@ function parseVlessHeader(buffer) {
   switch (addressType) {
     case 1: // For IPv4
       addressLength = 4;
-      addressValue = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
+      addressValue = new Uint8Array(
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+      ).join(".");
       break;
     case 2: // For Domain
-      addressLength = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + 1))[0];
+      addressLength = new Uint8Array(
+        buffer.slice(addressValueIndex, addressValueIndex + 1)
+      )[0];
       addressValueIndex += 1;
-      addressValue = new TextDecoder().decode(buffer.slice(addressValueIndex, addressValueIndex + addressLength));
+      addressValue = new TextDecoder().decode(
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+      );
       break;
     case 3: // For IPv6
       addressLength = 16;
-      const dataView = new DataView(buffer.slice(addressValueIndex, addressValueIndex + addressLength));
+      const dataView = new DataView(
+        buffer.slice(addressValueIndex, addressValueIndex + addressLength)
+      );
       const ipv6 = [];
       for (let i = 0; i < 8; i++) {
         ipv6.push(dataView.getUint16(i * 2).toString(16));
@@ -437,81 +406,13 @@ function parseVlessHeader(buffer) {
   };
 }
 
-function parseTrojanHeader(buffer) {
-  const socks5DataBuffer = buffer.slice(58);
-  if (socks5DataBuffer.byteLength < 6) {
-    return {
-      hasError: true,
-      message: "invalid SOCKS5 request data",
-    };
-  }
-
-  let isUDP = false;
-  const view = new DataView(socks5DataBuffer);
-  const cmd = view.getUint8(0);
-  if (cmd == 3) {
-    isUDP = true;
-  } else if (cmd != 1) {
-    throw new Error("Unsupported command type!");
-  }
-
-  let addressType = view.getUint8(1);
-  let addressLength = 0;
-  let addressValueIndex = 2;
-  let addressValue = "";
-  switch (addressType) {
-    case 1: // For IPv4
-      addressLength = 4;
-      addressValue = new Uint8Array(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(
-        "."
-      );
-      break;
-    case 3: // For Domain
-      addressLength = new Uint8Array(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
-      addressValueIndex += 1;
-      addressValue = new TextDecoder().decode(
-        socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength)
-      );
-      break;
-    case 4: // For IPv6
-      addressLength = 16;
-      const dataView = new DataView(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
-      const ipv6 = [];
-      for (let i = 0; i < 8; i++) {
-        ipv6.push(dataView.getUint16(i * 2).toString(16));
-      }
-      addressValue = ipv6.join(":");
-      break;
-    default:
-      return {
-        hasError: true,
-        message: `invalid addressType is ${addressType}`,
-      };
-  }
-
-  if (!addressValue) {
-    return {
-      hasError: true,
-      message: `address is empty, addressType is ${addressType}`,
-    };
-  }
-
-  const portIndex = addressValueIndex + addressLength;
-  const portBuffer = socks5DataBuffer.slice(portIndex, portIndex + 2);
-  const portRemote = new DataView(portBuffer).getUint16(0);
-  return {
-    hasError: false,
-    addressRemote: addressValue,
-    addressType: addressType,
-    portRemote: portRemote,
-    rawDataIndex: portIndex + 4,
-    rawClientData: socks5DataBuffer.slice(portIndex + 4),
-    version: null,
-    isUDP: isUDP,
-  };
-}
-
-async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, log) {
+async function remoteSocketToWS(
+  remoteSocket,
+  webSocket,
+  responseHeader,
+  retry,
+  log
+) {
   let header = responseHeader;
   let hasIncomingData = false;
   await remoteSocket.readable
@@ -531,7 +432,9 @@ async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, 
           }
         },
         close() {
-          log(`remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`);
+          log(
+            `remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`
+          );
         },
         abort(reason) {
           console.error(`remoteConnection!.readable abort`, reason);
@@ -550,26 +453,13 @@ async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, 
 
 function safeCloseWebSocket(socket) {
   try {
-    if (socket.readyState === WS_READY_STATE_OPEN || socket.readyState === WS_READY_STATE_CLOSING) {
+    if (
+      socket.readyState === WS_READY_STATE_OPEN ||
+      socket.readyState === WS_READY_STATE_CLOSING
+    ) {
       socket.close();
     }
   } catch (error) {
     console.error("safeCloseWebSocket error", error);
   }
 }
-
-// Helpers
-function base64ToArrayBuffer(base64Str) {
-  if (!base64Str) {
-    return { error: null };
-  }
-  try {
-    base64Str = base64Str.replace(/-/g, "+").replace(/_/g, "/");
-    const decode = atob(base64Str);
-    const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
-    return { earlyData: arryBuffer.buffer, error: null };
-  } catch (error) {
-    return { error };
-  }
-}
-
