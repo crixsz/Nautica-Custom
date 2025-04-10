@@ -55,7 +55,7 @@ export default {
           url.pathname === "/" ||
           url.pathname === ""
         ) {
-          proxyIP = "15.235.162.49:443"; // OVH SG;
+          proxyIP = "45.195.76.190:29690"; // MY EVOXT;
           return await websocketHandler(request);
         }
       }
