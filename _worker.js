@@ -3,7 +3,7 @@ import { connect } from "cloudflare:sockets";
 // Variables
 let proxyIP = "";
 
-// Constant
+// Constants
 const DNS_SERVER_ADDRESS = "8.8.8.8";
 const DNS_SERVER_PORT = 53;
 const WS_READY_STATE_OPEN = 1;
@@ -13,6 +13,44 @@ const CORS_HEADER_OPTIONS = {
   "Access-Control-Allow-Methods": "GET,HEAD,POST,OPTIONS",
   "Access-Control-Max-Age": "86400",
 };
+const PROXY_JSON_URL =
+  "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json";
+
+// Cache for proxy list (in-memory, simple for Worker)
+let proxyCache = null;
+let lastFetchTime = 0;
+const CACHE_TTL = 300000; // 5 minutes in milliseconds
+
+// Cache for selected proxy per country tag
+let selectedProxyCache = new Map(); // Maps country tag (e.g., "NL") to selected proxyIP
+
+async function fetchProxyList() {
+  const now = Date.now();
+  if (proxyCache && now - lastFetchTime < CACHE_TTL) {
+    return proxyCache;
+  }
+
+  try {
+    const response = await fetch(PROXY_JSON_URL, { cf: { cacheTtl: 300 } });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch proxy list: ${response.status}`);
+    }
+    proxyCache = await response.json();
+    lastFetchTime = now;
+    return proxyCache;
+  } catch (err) {
+    console.error("Error fetching proxy list:", err);
+    return null; // Fallback to default behavior
+  }
+}
+
+function getRandomProxy(proxies) {
+  if (!Array.isArray(proxies) || proxies.length === 0) {
+    return null;
+  }
+  const randomIndex = Math.floor(Math.random() * proxies.length);
+  return proxies[randomIndex];
+}
 
 async function reverseProxy(request, target, targetPath) {
   const targetUrl = new URL(request.url);
@@ -42,23 +80,54 @@ export default {
     try {
       const url = new URL(request.url);
       const upgradeHeader = request.headers.get("Upgrade");
+
       // Handle proxy client
       if (upgradeHeader === "websocket") {
         const proxyMatch = url.pathname.match(/^\/(.+[:=-]\d+)$/);
+        const pathTag = url.pathname.replace(/^\/+/, "").toUpperCase(); // e.g., "/NL" -> "NL", "/ru" -> "RU"
 
-        // if pathname is /default or none provided it will use user defined proxy
+        // Handle custom proxy path (e.g., /ip:port)
         if (proxyMatch) {
           proxyIP = proxyMatch[1];
           return await websocketHandler(request);
-        } else if (
+        }
+        // Handle default or root path
+        else if (
           url.pathname === "/default" ||
           url.pathname === "/" ||
           url.pathname === ""
         ) {
-          proxyIP = "123.253.33.182:12306"; // MY;
+          proxyIP = "123.253.33.182:12306"; // Default proxy
+          return await websocketHandler(request);
+        }
+        // Handle country tag paths (e.g., /NL, /RU, /AL)
+        else if (pathTag) {
+          const proxyList = await fetchProxyList();
+          if (proxyList && proxyList[pathTag]) {
+            // Check if we have a cached proxy for this country tag
+            if (selectedProxyCache.has(pathTag)) {
+              proxyIP = selectedProxyCache.get(pathTag);
+              console.log(`Reusing cached proxy for ${pathTag}: ${proxyIP}`);
+            } else {
+              // Select a new random proxy and cache it
+              const randomProxy = getRandomProxy(proxyList[pathTag]);
+              if (randomProxy) {
+                proxyIP = randomProxy;
+                selectedProxyCache.set(pathTag, proxyIP);
+                console.log(`Selected new proxy for ${pathTag}: ${proxyIP}`);
+              } else {
+                proxyIP = "45.195.76.190:29690"; // Fallback proxy
+              }
+            }
+            return await websocketHandler(request);
+          }
+          // Fallback if JSON fetch fails, tag not found, or no valid proxy
+          proxyIP = "45.195.76.190:29690"; // Default proxy
           return await websocketHandler(request);
         }
       }
+
+      // Fallback to reverse proxy if not a WebSocket request
       const targetReverseProxy = env.REVERSE_PROXY_TARGET || "example.com";
       return await reverseProxy(request, targetReverseProxy);
     } catch (err) {
@@ -73,6 +142,8 @@ export default {
 };
 
 async function websocketHandler(request) {
+  const url = new URL(request.url);
+  const pathTag = url.pathname.replace(/^\/+/, "").toUpperCase(); // e.g., "/NL" -> "NL"
   const webSocketPair = new WebSocketPair();
   const [client, webSocket] = Object.values(webSocketPair);
 
@@ -162,7 +233,8 @@ async function websocketHandler(request) {
             protocolHeader.rawClientData,
             webSocket,
             protocolHeader.version,
-            log
+            log,
+            pathTag // Pass pathTag
           );
         },
         close() {
@@ -199,40 +271,66 @@ async function handleTCPOutBound(
   rawClientData,
   webSocket,
   responseHeader,
-  log
+  log,
+  pathTag // Add pathTag parameter
 ) {
   async function connectAndWrite(address, port) {
-    const tcpSocket = connect({
-      hostname: address,
-      port: port,
-    });
-    remoteSocket.value = tcpSocket;
-    log(`connected to ${address}:${port}`);
-    const writer = tcpSocket.writable.getWriter();
-    await writer.write(rawClientData);
-    writer.releaseLock();
-
-    return tcpSocket;
+    try {
+      const tcpSocket = connect({
+        hostname: address,
+        port: port,
+      });
+      remoteSocket.value = tcpSocket;
+      log(`connected to ${address}:${port}`);
+      const writer = tcpSocket.writable.getWriter();
+      await writer.write(rawClientData);
+      writer.releaseLock();
+      return tcpSocket;
+    } catch (error) {
+      log(`Connection error to ${address}:${port}`, error);
+      throw error; // Rethrow to trigger retry
+    }
   }
 
   async function retry() {
-    const tcpSocket = await connectAndWrite(
-      proxyIP.split(/[:=-]/)[0] || addressRemote,
-      proxyIP.split(/[:=-]/)[1] || portRemote
-    );
-    tcpSocket.closed
-      .catch((error) => {
-        console.log("retry tcpSocket closed error", error);
-      })
-      .finally(() => {
+    // Fetch the proxy list again to get the current list for the country tag
+    const proxyList = await fetchProxyList();
+    if (proxyList && proxyList[pathTag]) {
+      // Select a new random proxy from the same country tag
+      const newProxy = getRandomProxy(proxyList[pathTag]);
+      if (newProxy && newProxy !== proxyIP) {
+        proxyIP = newProxy;
+        selectedProxyCache.set(pathTag, proxyIP); // Update the cache
+        log(`Retrying with new proxy for ${pathTag}: ${proxyIP}`);
+        const tcpSocket = await connectAndWrite(
+          proxyIP.split(/[:=-]/)[0] || addressRemote,
+          proxyIP.split(/[:=-]/)[1] || portRemote
+        );
+        tcpSocket.closed
+          .catch((error) => {
+            console.log("retry tcpSocket closed error", error);
+          })
+          .finally(() => {
+            safeCloseWebSocket(webSocket);
+          });
+        remoteSocketToWS(tcpSocket, webSocket, responseHeader, () => retry(), log);
+      } else {
+        log(`No alternative proxies available for ${pathTag}`);
         safeCloseWebSocket(webSocket);
-      });
-    remoteSocketToWS(tcpSocket, webSocket, responseHeader, null, log);
+      }
+    } else {
+      log(`Failed to fetch proxy list for ${pathTag} or no proxies available`);
+      safeCloseWebSocket(webSocket);
+    }
   }
 
-  const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-
-  remoteSocketToWS(tcpSocket, webSocket, responseHeader, retry, log);
+  try {
+    const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+    remoteSocketToWS(tcpSocket, webSocket, responseHeader, () => retry(), log);
+  } catch (error) {
+    log(`Initial connection failed, attempting retry for ${pathTag}`);
+    await retry();
+  }
 }
 
 async function handleUDPOutbound(
@@ -384,7 +482,7 @@ function parseVlessHeader(buffer) {
     default:
       return {
         hasError: true,
-        message: `invild  addressType is ${addressType}`,
+        message: `invild addressType is ${addressType}`,
       };
   }
   if (!addressValue) {
