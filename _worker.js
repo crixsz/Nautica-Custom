@@ -97,7 +97,7 @@ export default {
           url.pathname === "/" ||
           url.pathname === ""
         ) {
-          proxyIP = "123.253.33.182:12306"; // Default proxy
+          proxyIP = "47.74.254.191:8900"; // Default proxy
           return await websocketHandler(request);
         }
         // Handle country tag paths (e.g., /NL, /RU, /AL)
